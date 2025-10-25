@@ -1,70 +1,71 @@
 import os
 import json
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Токен бота
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-if not BOT_TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN not found in environment variables")
-    # Для отладки - создаем фейковый токен если не установлен
-    BOT_TOKEN = "fake_token_for_debug"
 
-# Создаем приложение
-application = Application.builder().token(BOT_TOKEN).build()
+async def send_telegram_message(chat_id, text):
+    """Отправляет сообщение в Telegram"""
+    try:
+        import aiohttp
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': chat_id,
+            'text': text,
+            'parse_mode': 'HTML'
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                return await response.json()
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        return None
 
-# Простые обработчики команд
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🕉️ Бот Бхагавад-Гиты запущен! Используйте /quote для получения цитаты.")
+async def process_update(update_data):
+    """Обрабатывает обновление от Telegram"""
+    try:
+        if 'message' in update_data:
+            message = update_data['message']
+            chat_id = message['chat']['id']
+            text = message.get('text', '')
+            
+            if text == '/start':
+                response_text = "🕉️ Бот Бхагавад-Гиты запущен! Используйте /quote для получения цитаты."
+            elif text == '/quote':
+                response_text = """
+🕉️ <b>Бхагавад-Гита, Глава 2, Стих 47</b>
 
-async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    quote_text = """
-🕉️ **Бхагавад-Гита, Глава 2, Стих 47**
-
-**Шлока:**
+<b>Шлока:</b>
 кармаṇy-evādhikāras te mā phaleṣhu kadāchana
 mā karma-phala-hetur bhūr mā te saṅgo 'stvakarmaṇi
 
-**Перевод:**
+<b>Перевод:</b>
 Ты имеешь право только на действие, но никогда на его плоды.
 Пусть плоды действия не будут твоим мотивом, и не будь привязан к бездействию.
-    """
-    await update.message.reply_text(quote_text)
+                """
+            elif text == '/help':
+                response_text = "Помощь: /start, /quote, /help"
+            else:
+                response_text = "Неизвестная команда. Используйте /help для списка команд."
+            
+            await send_telegram_message(chat_id, response_text)
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
+        return False
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Помощь: /start, /quote, /help")
-
-# Регистрируем обработчики
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("quote", quote))
-application.add_handler(CommandHandler("help", help_command))
-
-# Инициализируем приложение при импорте
-async def initialize():
-    await application.initialize()
-    await application.start()
-    logger.info("Bot application initialized")
-
-# Запускаем инициализацию
-import asyncio
-try:
-    asyncio.get_event_loop().run_until_complete(initialize())
-except RuntimeError:
-    # Если уже есть running loop (например, в Vercel)
-    asyncio.create_task(initialize())
-
-# Обработчик для Vercel
+# Основной обработчик для Vercel
 async def app(request):
     try:
-        # GET запрос
+        # GET запрос - проверка работоспособности
         if request.method == 'GET':
             return {
                 'statusCode': 200,
@@ -72,7 +73,7 @@ async def app(request):
                 'body': json.dumps({
                     'status': 'Bot is running', 
                     'ok': True,
-                    'token_set': bool(BOT_TOKEN and BOT_TOKEN != "fake_token_for_debug")
+                    'token_set': bool(BOT_TOKEN)
                 })
             }
         
@@ -83,18 +84,15 @@ async def app(request):
             body_str = body.decode('utf-8')
             data = json.loads(body_str)
             
-            logger.info(f"Received update: {data}")
-            
-            # Создаем объект Update
-            update = Update.de_json(data, application.bot)
+            logger.info(f"Received update from Telegram")
             
             # Обрабатываем обновление
-            await application.process_update(update)
+            result = await process_update(data)
             
             return {
                 'statusCode': 200,
                 'headers': {'Content-Type': 'application/json'},
-                'body': json.dumps({'status': 'ok'})
+                'body': json.dumps({'status': 'ok' if result else 'error'})
             }
             
     except Exception as e:
